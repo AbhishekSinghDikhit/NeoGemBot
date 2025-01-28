@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 try:
-    GEMINI_API_KEY = "AIzaSyATo_VGl0FUVWZAi3yYCKsRleyJIfy0M78"
-    TELEGRAM_BOT_TOKEN = "7577465285:AAHc5OF1PM6fb0TlLCFYgz35l9bpeQlmKQ8"
-    MONGO_USERNAME = "aabhishek576"
-    MONGO_PASSWORD = quote_plus("1S2i3n4g5h")
+    GEMINI_API_KEY = config('GEMINI_API_KEY')
+    TELEGRAM_BOT_TOKEN = config('TELEGRAM_BOT_TOKEN')
+    MONGO_USERNAME = config('MONGO_USERNAME')
+    MONGO_PASSWORD = config('MONGO_PASSWORD')
 except UndefinedValueError as e:
     logger.error(f"Environment variable not set: {str(e)}")
     raise
