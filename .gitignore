@@ -1,0 +1,13 @@
+# Ignore environment files
+.env
+bot_cred.env
+
+
+# Ignore Python compiled files
+*.pyc
+__pycache__/
+
+# Ignore virtual environment
+venv/
+
+
