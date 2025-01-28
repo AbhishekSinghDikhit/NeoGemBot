@@ -25,8 +25,8 @@ A Telegram bot that allows users to upload and analyze images and PDF files. The
 
 1. Clone the repository:
     ```bash
-    git clone https://github.com/yourusername/telegram-image-file-handler-bot.git
-    cd telegram-image-file-handler-bot
+    https://github.com/AbhishekSinghDikhit/NeoGemBot.git
+    cd NeoGemBot
     ```
 
 2. Create a virtual environment and activate it:
@@ -64,12 +64,6 @@ A Telegram bot that allows users to upload and analyze images and PDF files. The
 3. **Upload a PDF**:
    - Send a PDF file to the bot, and it will extract the text for analysis.
 
-4. **Generate an Image**:
-   - Send a command like `/generate_image Fuzzy bunnies in my kitchen` to generate an image based on the prompt.
-
-## Commands
-
-- `/generate_image <prompt>`: Generate an image based on the provided prompt.
 
 ## Example Output
 
