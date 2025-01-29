@@ -4,6 +4,7 @@ from PIL import Image
 import fitz
 from PyPDF2 import PdfReader
 import logging
+from dotenv import load_dotenv
 import datetime
 import asyncio
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -13,7 +14,6 @@ from telegram.ext import (
 from pymongo import MongoClient
 import requests
 import google.generativeai as genai
-from decouple import config, UndefinedValueError
 from google.api_core.exceptions import ResourceExhausted
 from urllib.parse import quote_plus
 
@@ -24,28 +24,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-try:
-    GEMINI_API_KEY = config('GEMINI_API_KEY')
-    TELEGRAM_BOT_TOKEN = config('TELEGRAM_BOT_TOKEN')
-    MONGO_USERNAME = config('MONGO_USERNAME')
-    MONGO_PASSWORD = config('MONGO_PASSWORD')
-except UndefinedValueError as e:
-    logger.error(f"Environment variable not set: {str(e)}")
-    raise
 
-# Initialize MongoDB connection
+# Load .env file
+load_dotenv()
+
+# Fetch environment variables
 try:
-    MONGO_URI = f"mongodb+srv://{MONGO_USERNAME}:{MONGO_PASSWORD}@infomate.r9goy.mongodb.net/?retryWrites=true&w=majority"
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    MONGO_URI = os.getenv("MONGO_URI")
+except Exception as e:
+    print(f"Error loading environment variables: {e}")
+
+try:
     client = MongoClient(MONGO_URI)
-    client.admin.command('ping')
+    client.admin.command("ping")
     db = client["NeoGem"]
     users_collection = db["users"]
     chats_collection = db["chats"]
     files_collection = db["files"]
-    logger.info("Connected to MongoDB successfully.")
+
+    logger.info("✅ Connected to MongoDB successfully.")
 except Exception as e:
-    logger.error(f"Error connecting to MongoDB: {str(e)}")
+    logger.error(f"❌ Error connecting to MongoDB: {str(e)}", exc_info=True)
     raise
 
 # Initialize Gemini API
