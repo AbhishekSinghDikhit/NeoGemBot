@@ -1,12 +1,18 @@
 import os
 import io
+import re
 from PIL import Image 
 import fitz
 from PyPDF2 import PdfReader
 import logging
 from dotenv import load_dotenv
 import datetime
+from pydub import AudioSegment
+import whisper
 import asyncio
+from textblob import TextBlob
+from googletrans import Translator
+import pandas as pd
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -32,12 +38,12 @@ load_dotenv()
 try:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    MONGO_URI = os.getenv("MONGO_URI")
+    MONGO_URL = os.getenv("MONGO_URL")
 except Exception as e:
     print(f"Error loading environment variables: {e}")
 
 try:
-    client = MongoClient(MONGO_URI)
+    client = MongoClient(MONGO_URL)
     client.admin.command("ping")
     db = client["NeoGem"]
     users_collection = db["users"]
@@ -52,6 +58,24 @@ except Exception as e:
 # Initialize Gemini API
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
+translator = Translator()
+whisper_model = whisper.load_model("base")
+API_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-dev"
+HEADERS = {"Authorization": f"Bearer {os.getenv('HF_TOKEN')}"}
+
+def analyze_sentiment(text):
+    blob = TextBlob(text)
+    sentiment_score = blob.sentiment.polarity  
+    if sentiment_score > 0:
+        return "Positive 😊"
+    elif sentiment_score < 0:
+        return "Negative 😞"
+    return "Neutral 😐"
+
+# Auto-Translation Function
+def translate_text(text, target_lang="en"):
+    translated_text = translator.translate(text, dest=target_lang).text
+    return translated_text
 
 # Start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -72,6 +96,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         commands = [
             "/start - Start the bot and display this message.",
             "/websearch <query or link> - Search the web for the specified query or link.",
+            "/generate_image - generate image with prompt",
             "/stop - Stop the bot.",
             # Add more commands as needed
         ]
@@ -98,55 +123,95 @@ async def save_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text("Contact saved! You're all set.")
 
+# Function to query the Hugging Face Inference API
+def generate_image_from_prompt(prompt):
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "height": 256, 
+            "width": 256,
+            "guidance_scale": 7.5,
+            "num_inference_steps": 30  
+        }
+    }
+
+    response = requests.post(API_URL, headers=HEADERS, json=payload)
+
+    if response.status_code == 200:
+        return response.content  # Returns image bytes
+    else:
+        raise Exception(f"Failed to generate image: {response.status_code}, {response.text}")
+
+# Telegram bot command handler for image generation
+async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /generate_image <prompt>")
+        return
+
+    prompt = " ".join(context.args)
+    await update.message.reply_text(f"Generating an image for: '{prompt}'...")
+
+    try:
+        # Generate image from the prompt
+        image_bytes = generate_image_from_prompt(prompt)
+
+        # Load the image using PIL and save it temporarily
+        image = Image.open(io.BytesIO(image_bytes))
+        temp_path = "generated_image.png"
+        image.save(temp_path)
+
+        # Send the generated image to the user
+        await update.message.reply_photo(photo=open(temp_path, "rb"))
+    except Exception as e:
+        await update.message.reply_text(f"An error occurred: {str(e)}")
+
 #Gemini-powered chat handler
 async def gemini_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text
     chat_id = update.effective_chat.id
     retries = 3
-    delay = 5  # seconds
-    bot_response = ""
-
+    delay = 5
+    
+    # Retrieve previous chat history (last 5 messages)
+    chat_history = chats_collection.find({"chat_id": chat_id}).sort("timestamp", -1).limit(5)
+    chat_context = "\n".join([f"User: {chat['user_input']}\nBot: {chat['bot_response']}" for chat in chat_history])
+    prompt = f"Previous conversation:\n{chat_context}\nUser: {user_input}\nBot:"
+    
     for attempt in range(retries):
         try:
-            # Generate response using Gemini API
-            response = model.generate_content(user_input, stream=True)
-            
+            response = model.generate_content(prompt, stream=True)
             response.resolve()
-
             bot_response = response.text
-
-            # Save chat history in MongoDB
+            
+            # Save chat history
             chats_collection.insert_one({
                 "chat_id": chat_id,
                 "user_input": user_input,
                 "bot_response": bot_response,
                 "timestamp": datetime.datetime.utcnow()
             })
-
-            if bot_response:
-                await update.message.reply_text(bot_response)
-            else:
-                await update.message.reply_text("No response generated.")
-            return  # Exit after successfully sending the response
-
+            
+            await update.message.reply_text(bot_response if bot_response else "No response generated.")
+            return
         except ResourceExhausted:
             if attempt < retries - 1:
-                await update.message.reply_text("Rate limit exceeded. Retrying...")
-                await asyncio.sleep(delay)  # Wait before retrying
-                delay *= 2  # Exponential backoff
+                await asyncio.sleep(delay)
+                delay *= 2
             else:
                 await update.message.reply_text("Quota exceeded, please try again later.")
                 break
         except Exception as e:
             logger.error(f"Error in Gemini chat: {str(e)}")
-            await update.message.reply_text("Sorry, I couldn't process your request at the moment.")
+            await update.message.reply_text("Sorry, I couldn't process your request.")
             break
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = update.message.document or (update.message.photo[-1] if update.message.photo else None)
+    file = (update.message.document or 
+            (update.message.photo[-1] if update.message.photo else None) or
+            update.message.audio or update.message.voice)
     
     if not file:
-        await update.message.reply_text("Please send a valid file or image.")
+        await update.message.reply_text("Please send a valid file, image, or audio.")
         return
 
     file_id = file.file_id
@@ -156,80 +221,73 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for attempt in range(retries):
         try:
-            # Save file metadata and download the file locally
             file_info = await context.bot.get_file(file_id)
             os.makedirs("downloads", exist_ok=True)
             file_path = f"downloads/{file_name}"
             await file_info.download_to_drive(file_path)
 
-            # Read the file into memory for MongoDB storage (if storing as binary)
             with open(file_path, "rb") as file_data:
                 file_binary = file_data.read()
 
-            # Store the file in MongoDB along with its metadata
             file_metadata = {
                 "chat_id": update.effective_chat.id,
                 "file_name": file_name,
-                "file_data": file_binary,  # Store the binary content
+                "file_data": file_binary,
                 "timestamp": datetime.datetime.utcnow()
             }
             files_collection.insert_one(file_metadata)
 
-            # If the file is a PDF, process it accordingly
             if file_name.lower().endswith('.pdf'):
-                # Extract text from the PDF using PyMuPDF (fitz)
-                pdf_reader = PdfReader(file_path)
                 text = ""
-                for page in pdf_reader.pages:
-                    text += page.extract_text()
-                # Generate a prompt for Gemini to describe the content of the PDF
-                prompt = f"Summarize the content of the PDF: {file_name}. The extracted text is: {text[:1000]}..."  # Limit text for context
+                pdf_reader = fitz.open(file_path)
+                for page in pdf_reader:
+                    text += page.get_text()
+                response_text = summarize_text(text[:1000])
 
-                # Send the prompt along with the extracted text to the Gemini API
-                response = model.generate_content([prompt])
+            elif file_name.lower().endswith(('.jpg', '.jpeg', '.png')):
+                image = Image.open(io.BytesIO(file_binary))
+                response_text = describe_image(image)
 
-                # Resolve the response and get the description text
-                response.resolve()
-                file_description = response.text
-
-                # Update metadata with description
-                files_collection.update_one(
-                    {"file_name": file_name},
-                    {"$set": {"description": file_description}}
-                )
+            elif file_name.lower().endswith(('.mp3', '.wav', '.ogg', '.m4a')):
+                audio_text = transcribe_audio(file_path)
+                response_text = f"Transcribed Audio: {audio_text}"
 
             else:
-                # Handle image or other file types (like JPG, PNG) as before
-                image = Image.open(io.BytesIO(file_binary))  # Open the file from binary data
-                prompt = f"Describe the content of the image: {file_name}"
-                response = model.generate_content([prompt, image])
-                response.resolve()
-                file_description = response.text
+                response_text = "File uploaded successfully. No analysis available."
 
-                # Update metadata with description
-                files_collection.update_one(
-                    {"file_name": file_name},
-                    {"$set": {"description": file_description}}
-                )
+            files_collection.update_one(
+                {"file_name": file_name},
+                {"$set": {"description": response_text}}
+            )
 
-            await update.message.reply_text(f"File analyzed: {file_description}")
-            return  # Exit after successfully processing the file
+            await update.message.reply_text(f"File analyzed: {response_text}")
+            return
 
-        except ResourceExhausted:
-            if attempt < retries - 1:
-                await update.message.reply_text("Rate limit exceeded. Retrying...")
-                await asyncio.sleep(delay)  # Wait before retrying
-                delay *= 2  # Exponential backoff
-            else:
-                await update.message.reply_text("Quota exceeded, please try again later.")
-                break
         except Exception as e:
             logger.error(f"Error handling file: {str(e)}")
             await update.message.reply_text("An error occurred while processing the file.")
             break
 
-# Web search handler
-import re
+# Helper functions
+def summarize_text(text):
+    prompt = f"Summarize the following text: {text}"
+    response = model.generate_content([prompt])
+    response.resolve()
+    return response.text
+
+def describe_image(image):
+    prompt = "Describe the content of this image."
+    response = model.generate_content([prompt, image])
+    response.resolve()
+    return response.text
+
+def transcribe_audio(file_path):
+    audio = AudioSegment.from_file(file_path)
+    audio.export("temp.wav", format="wav")
+    result = whisper_model.transcribe("temp.wav")
+    os.remove("temp.wav")
+    return result["text"]
+
 
 async def web_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
@@ -299,6 +357,7 @@ def main():
     # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("websearch", web_search))
+    app.add_handler(CommandHandler("generate_image", generate_image))
     app.add_handler(CommandHandler("stop", stop))
 
     # Message handlers
