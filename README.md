@@ -64,7 +64,3 @@ A Telegram bot that allows users to upload and analyze images and PDF files. The
 3. **Upload a PDF**:
    - Send a PDF file to the bot, and it will extract the text for analysis.
 
-
-## Example Output
-
-When a user sends an image:
